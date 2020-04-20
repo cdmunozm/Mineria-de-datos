@@ -8,7 +8,7 @@ En el presente repositorio encontraran:
 2. Informe escrito donde se describe el procedimiento que se llevo acabo en la elaboración de la segmentación
 3. Anexo 1: Pdf de ayuda cllusterización que aporta al estudio inicial 
 4. Anexo 2: Script en R para sacar el anexo 1
-5. Anexo 3: Matriz de Gant
+5. Anexo 3: Matriz de Gantt
 
 
 Realizado por Julian Castelblanco Benitez, Cristian Muñoz Mora
