@@ -1,0 +1,354 @@
+---
+title: "Minería de datos para grandes volúmenes de Información"
+author: Julián Castelblanco, Cristian David Muñoz
+date: "18 de abril de 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message= FALSE , fig.width=11)
+```
+
+#### Resumen
+Este documento contiene los lineamientos para la presentación de la
+última actividad evaluativa a entregar el dia 18 de Abril de 2020.
+
+# 1. Introducción
+El objetivo del proyecto es proveer elementos teóricos y conceptuales que permitan a las empresas entender, y enfrentar el problema de segementar a sus clientes con un modelo compacto que permita representar fenómenos del mundo real.
+
+Consecuentemente, los principios de teoría de aprendizaje fueron adelantados en la primera sesión. Se explorará la construcción de diversos modelos mediante la aplicación de los conceptos. Teniendo en cuenta que los lectores de la Maestría en Ciencia de los Datos y Analítica tienen diferentes perfiles y fundamentación, el proyecto pretende adelantar la correcta aplicación de conceptos que permiten construir el modelo, evaluarlo y juzgar con perspectiva científica su desempeño. Esta actividad evaluativa consiste en aplicar los conceptos de aprendizaje no supervisado en un conjunto de datos.
+
+Los algoritmos que van a explorar son los siguientes:
+
+  - K means clustering 
+  - K Medoids clustering
+  - Fuzzy c-means clustering 
+  - Hierarchical clustering
+
+```{r libraries, include=FALSE}
+getPkg <-function(pkg, url = "http://cran.r-project.org"){
+  to.do <- setdiff(pkg, installed.packages()[,1])
+  for(package in to.do) invisible(install.packages(package, repos = url))
+}	
+pkgs <- c("glmnet","dplyr","ggplot2","lattice","outliers","caret","ROCR","nortest","nnet","gridExtra","Rtsne",
+          "MASS","lme4","SparseM","car","leaps","easypackages","pscl","MASS","tidyr","reticulate","reshape2",
+          "gvlma","olsrr","RcmdrMisc","kableExtra","clusterSim","stringr","summarytools","formattable",
+          "cluster","factoextra","pracma","clValid","NbClust","frbs","e1017","lubridate","janitor")
+getPkg(pkgs)
+library(easypackages)
+libraries(pkgs)
+#devtools::install_github("elbamos/largeVis", ref = "release/0.2")
+#library(largeVis)
+
+#Funciones Auxiliares
+#identificacion de el numero de clutes para método kmeans
+wssplot <- function(data, nc=15, seed=1152189889){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var))
+  for (i in 2:nc){
+    set.seed(seed)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, wss, type="b", xlab="Número de clusters",
+       ylab="suma de cuadrados",main="Número óptimo de clusters")}
+```
+
+
+# 2. Desarrollo
+
+La base de datos seleccionada es  **data_ventas**, con la cuál realizaremos los siguientes pasos:
+
+```{r, include=FALSE}
+data <- read.csv("D:/Descargas/data.csv", sep=",",colClasses = c("character","character","character","numeric","character","numeric","character"))
+
+data%>%clean_names()->data
+data2<-data
+data2$date = as.Date(data$invoice_date,format="%m/%d/%Y")
+##data2$date = mdy_hm(data$invoice_date)
+
+data2 %>% mutate(total=round(unit_price*quantity,2)) %>% mutate(RecencyDays= ymd('2011-12-31') - date)->data2
+
+data2$RecencyDays <- as.numeric(data2$RecencyDays )
+
+data2 %>% dplyr::select(c("customer_id","RecencyDays","total"))%>% group_by(customer_id) %>% mutate(recency=min(RecencyDays),
+                                           frequency=n(),
+                                           monetary=sum(total)) %>% dplyr::select(-c(total,RecencyDays) )-> data2
+
+data2<-data2[!duplicated(data2$customer_id),]
+
+r_quartile <-quantile(data2$recency, probs = seq(0.25,0.75,0.25), na.rm = TRUE)
+f_quartile <-quantile(data2$frequency, probs = seq(0.25,0.75,0.25), na.rm = TRUE)
+m_quartile <-quantile(data2$monetary, probs = seq(0.25,0.75,0.25), na.rm = TRUE)
+
+data2$r_quartile <- ifelse(data2$recency >= as.numeric(r_quartile[[3]]),1,
+                    ifelse(data2$recency >= as.numeric(r_quartile[[2]]),2,
+                    ifelse(data2$recency >= as.numeric(r_quartile[[1]]),3,4)))
+
+data2$f_quartile <- ifelse(data2$frequency >= as.numeric(f_quartile[[3]]),4,
+                    ifelse(data2$frequency >= as.numeric(f_quartile[[2]]),3,
+                    ifelse(data2$frequency >= as.numeric(f_quartile[[1]]),2,1)))
+
+data2$m_quartile <- ifelse(data2$monetary >= as.numeric(m_quartile[[3]]),4,
+                    ifelse(data2$monetary >= as.numeric(m_quartile[[2]]),3,
+                    ifelse(data2$monetary >= as.numeric(m_quartile[[1]]),2,1)))
+
+data2$rfm_score <- as.numeric(paste0(data2$r_quartile,data2$f_quartile,data2$m_quartile))
+
+df<- data2
+```
+
+### 2.1 Número de Clúster óptimo
+
+Para encontrar el número de clúster óptimo, realizamos el pico significativo de Hubert _[1](#1)_, con los siguientes criterios: 
+
+* **Distancia:** *Manhattan*, *Euclidean* y *Canberra*.
+
+    + *Manhattan*: $d(x,y)= sum_{j=1}^{d}|x_j - y_j|$
+    
+* **Método:** 
+    
+    + *Ward*, el método minimiza el número total de clusters respecto a la varianza.
+    
+* **Índice:** *all*, todos los índeces excepto GAP, Gamma, Gplus y Tau
+
+###### **Manhattan y Ward** 
+```{r MW_Optimo, echo=FALSE,cache=TRUE}
+#crear matriz de distancias
+par(mfrow=c(1,1))
+#wssplot(df,nc=10)
+#set.seed(1152189889)
+#Segmen<-kmeans(df,centers=2, nstart=1)
+#ro=order(Segmen$cluster)
+#df<-data.frame(df,Cluster=Segmen$cluster)
+#table(df$Cluster)/sum(table(df$Cluster))
+
+my_data <- scale(df[,-1])
+res.nbclust <- NbClust(my_data, distance = "manhattan",
+                       min.nc = 2, max.nc = 10, 
+                       method = "ward.D2", index ="all") 
+n_clus_Ele<-max(res.nbclust$Best.partition)
+factoextra::fviz_nbclust(res.nbclust)
+
+```
+
+###### **Hierarchical Clustering**
+
+Es una alternativa a los métodos de *partitioning clustering* que no requiere que se pre-especifique el número de clusters. Los métodos que engloba el **hierarchical clustering** _[7](#7)_ se subdividen en dos tipos dependiendo de la estrategia seguida para crear los grupos:
+
+Agglomerative clustering (bottom-up) y Divisive clustering (top-down). En ambos casos, los resultados pueden representarse de forma muy intuitiva en una estructura de árbol llamada ***dendrograma***.
+
+###### **Manhattan y Ward**
+```{r MW_dendo, echo=FALSE,cache=TRUE}
+d <- dist(my_data, method = "manhattan")
+res.hc <- hclust(d, method = "ward.D2" )
+# partir en seis grupos 
+grp <- cutree(res.hc, k = n_clus_Ele)
+# visualizacion 
+plot(res.hc, cex = 0.6) # plot tree
+rect.hclust(res.hc, k = n_clus_Ele, border = 2:7) # add rectangle
+grupo<-grp
+basef<-data.frame(df,as.factor(grupo))
+names(basef)<-"grupo"
+```
+
+Para nuestro caso elegimos el método **Ward** con distancia **Manhattan** ya que son los criterios más usados en los métodos de clusterización, principalmente porque minimiza la variabilidad *(Ward)* y la distancia *(Manhattan)* se ve menos afectada por outliers (es más robusta) que la distancia euclídea debido a que no eleva al cuadrado las diferencias. Así mismo para la realización de los modelos, se eligen **3** como el númer clúster óptimo por el índice de Hubert; los métodos a realizar son los siguientes:
+
+  + K means clustering  _[2](#2)_
+  + K medoids _[3](#3)_
+  + Fuzzy c-means clustering _[4](#4)_
+  + Clara Clustering _[5](#5)_
+
+### 2.2 Clusterización en Altas dimensiones
+
+###### 2.2.1 **K means clustering**
+El método K-means clustering (MacQueen, 1967) agrupa las observaciones en K clusters distintos, donde el número K lo determina el analista antes de ejecutar del algoritmo. K-means clustering encuentra los K mejores clusters, entendiendo como mejor cluster aquel cuya varianza interna (intra-cluster variation) sea lo más pequeña posible. Se trata por lo tanto de un problema de optimización, en el que se reparten las observaciones en K clusters de forma que la suma de las varianzas internas de todos ellos sea lo menor posible.
+
+```{r Alt_Kmeans,echo=FALSE,cache=TRUE}
+d <- dist(my_data, method = "manhattan")
+km.res <- kmeans(d, n_clus_Ele,nstart =  25)
+fviz_cluster(km.res, data = my_data, frame.type = "confidence")+ theme_bw() + labs(title = "k means")
+```
+
+
+###### 2.2.2 **K medoids**
+
+K-medoids es un método de clustering donde el elemento dentro de un cluster cuya distancia (diferencia) promedio entre él y todos los demás elementos del mismo cluster es lo menor posible. Se corresponde con el elemento más central del cluster y por lo tanto puede considerarse como el más representativo. El hecho de utilizar medoids en lugar de centroides hace de K-medoids un método más robusto que K-means, viéndose menos afectado por outliers o ruido. A modo de idea intuitiva puede considerarse como la analogía entre media y mediana.
+
+```{r Alt_Kmediods,echo=FALSE,cache=TRUE}
+pam.res  <- pam(x = my_data, k = n_clus_Ele, metric = "manhattan")
+# Visualize
+fviz_cluster(pam.res, data = my_data, stand = T, geom = "point", frame.type = "confidence")+ theme_bw() + labs(title = "k Medoids")
+```
+
+
+###### 2.2.3 **Fuzzy c-means clustering**
+Los métodos de fuzzy clustering o soft clustering se caracterizan porque, cada observación, puede pertenecer potencialmente a varios clusters, en concreto, cada observación tiene asignado un grado de pertenencia a cada uno de los cluster.
+
+Se asemeja en gran medida al algoritmo de k-means pero con dos diferencias:
+
++ El cálculo de los centroides de los clusters. La definición de centroide empleada por c-means es: la media de todas las observaciones del set de datos ponderada por la probabilidad de pertenecer a al cluster.
+
++ Devuelve para cada observación la probabilidad de pertenecer a cada cluster.
+
+```{r Alt_Fuzzy,echo=FALSE,cache=TRUE}
+
+fuzzy_cluster <- fanny(x = my_data, k = n_clus_Ele, metric = "manhattan")
+
+fviz_cluster(object = fuzzy_cluster, frame.type = "confidence",
+             pallete = "jco") + theme_bw() + labs(title = "Fuzzy Cluster plot")
+
+
+```
+
+###### 2.2.4 **Clara Clustering**
+Jerárquico es un método que selecciona una muestra aleatoria de un tamaño determinado y le aplica el algoritmo de PAM (K-medoids) para encontrar los clusters óptimos acorde a esa muestra. Utilizando esos medoids se agrupan las observaciones de todo el set de datos. La calidad de los medoids resultantes se cuantifica con la suma total de las distancias entre cada observación del set de datos y su correspondiente medoid (suma total de distancias intra-clusters). CLARA repite este proceso un número predeterminado de veces con el objetivo de reducir el tiempo de muestreo. Por último, se seleccionan como clusters finales los obtenidos con aquellos medoids que han conseguido menor suma total de distancias.
+
+```{r Alt_Clara, echo=FALSE,cache=TRUE}
+clarax <- clara(my_data, n_clus_Ele)
+# Cluster plot
+fviz_cluster(clarax, stand = T, geom = "point", frame.type = "confidence",
+             pallete = "jco") + theme_bw() + labs(title = "Fuzzy Cluster plot")
+```
+
+
+### 2.3 Clusterización con Embebimiento TSNE 
+
+*T-SNE*  _[8](#8)_ es un método útil de reducción de dimensionalidad que le permite visualizar datos incrustados en un número menor de dimensiones. Puede lidiar con patrones más complejos de grupos gaussianos en el espacio multidimensional en comparación con *PCA*.
+
+```{r select_tsne ,echo=FALSE}
+set.seed(1152189889) # for reproducibility
+Tsne <- Rtsne(df[,-1], dims = 3, perplexity=100, verbose=TRUE, max_iter = 10000,eta=200,check_duplicates = FALSE)
+tsne<-data.frame(df$customer_id,Tsne[["Y"]])
+names(tsne)<-c("id","X1","X2","X3")
+#train_tsne<-tsne[index,]
+#test_tsne<-tsne[-index,]
+my_data<-scale(tsne[,-1])
+
+res.nbclust <- NbClust(my_data, distance = "manhattan",
+                       min.nc = 2, max.nc = 10, 
+                       method = "ward.D2", index ="all") 
+n_clus_Ele<-max(res.nbclust$Best.partition)
+factoextra::fviz_nbclust(res.nbclust)
+
+```
+
+
+
+###### 2.3.1 **Validación**
+
+Se busca cuantificar la homogeneidad dentro de cada cluster y a su vez la separación entre los demás, teniendo en cuenta que ambos criterios tienen tendencias opuestas, es decir, a mayor número de clusters, mayor homogeneidad pero menor distancia, es una forma de saber que tan bueno es el resultado. Para ello los dos índices mayormente utilizados son silhouette Width y Dunn pero también veremos las medidas de estabilidad.
+
+Definiciones de homogeneidad de cluster:
+
++ Promedio de la distancia entre todos los pares de observaciones:
+
+$\ \ \ \ \ \ \ Homogeneidad (C)=\ \sum Oi, Oj\in C, Oi \neq Oj \ distancia(Oi,Oj)\left \|  C\right \|*(\left \| C \right \|-1)$
+
++ Promedio de la distancia entre las observaciones que forman el cluster y su centroide:
+
+$\ \ \ \ \ \ \ Homogeneidad (C)=\ \sum Oi \in C,\ distancia(Oi,O^{-})\ \left \|  C\right \|$
+
+**El Índice Silhouette:** 
+
+Cuantifica la calidad de la asignación que se ha realizado de una observación comparando su semejanza a las demás observaciones del mismo cluster frente a las de los otros cluster. Su valor puede estar entre 1 y -1, siendo los valores altos un buen indicativo que la observación se ha asignado al cluster correcto, mientras los valores estén cercanos a cero, significa un valor medio entre dos clusters de la observación y por último si los valores son negativos quiere decir que se realizo una asignación incorrecta de la observación.
+
+Para cada observación $i$, el $silhouette \ coeficient\  (s_{i})$ se obtiene del siguiente modo:
+
+$\ \ \ \ \ \ \ \ s_{i}=\frac{b_{i}-a_{i}}{max(a_{i},b_{i})}$
+
+$a_{i}$ media de las distancias entre la observación $i$ y el resto de observaciones.
+
+$b_{i}$ es la menor de las distancias promedio entre $i$ y el resto de clusters.
+
+**El índice Dunn:** 
+
+El objetivo con este índice es maximizar asignando valores grandes al númerador y pequeños al denominador, esto se logra si se tiene clusters compactos y bien separados; Sin embargo, este índice se sugiere ser utilizado "en el peor de los casos" puesto que su gran inconveniente es si alguno de los clusters no tiene un comportamiento ideal y su calidad es baja, cómo el denominador utiliza el máximo en un lugar de la media, el índice se vería totalmente influenciado por este ocultando a los demás.
+
+Calcular el índice Dunn como:
+
+$\ \ \ \ \ \ \ \ D=\frac{separacion\ minima\ interclusters}{ separacion \ maxima \ intracluster}$
+
+```{r Validacion,echo=FALSE,cache=TRUE}
+intern <- clValid(my_data, nClust = c(2:n_clus_Ele+2) , maxitems = 10000,
+                  clMethods = c("hierarchical","kmeans","fanny",'clara','pam'), metric = "manhattan",
+                  validation = "internal") 
+par(mfrow=c(1,1))
+summary(intern)
+plot(intern)
+
+#clMethods:"hierarchical", "kmeans", "diana", "fanny", "som", "model", "sota", "pam", "clara", and "agnes"
+```
+
+
+
+
+###### 2.3.2 Gráfico **K means clustering**
+```{r Baj_Kmeans,echo=FALSE,cache=TRUE}
+d <- dist(my_data, method = "manhattan")
+km.res <- kmeans(d, n_clus_Ele,nstart =  25)
+fviz_cluster(km.res, data = my_data, frame.type = "confidence",ellipse = TRUE, ellipse.type = "convex",
+             ellipse.level = 0.95, ellipse.alpha = 0.2)+ theme_bw() + labs(title = "k means")
+```
+
+
+###### 2.3.3 Gráfico **K medoids**
+```{r Baj_Kmediods,echo=FALSE,cache=TRUE}
+pam.res  <- pam(x = my_data, k = n_clus_Ele+1, metric = "manhattan")
+# Visualize
+fviz_cluster(pam.res, data = my_data, stand = T, geom = "point", frame.type = "confidence")+ theme_bw() + labs(title = "k Medoids")
+
+```
+
+
+###### 2.3.4 Gráfico **Fuzzy c-means clustering**
+```{r Baj_Fuzzy,echo=FALSE,cache=TRUE}
+
+fuzzy_cluster <- fanny(x = my_data, k = n_clus_Ele, metric = "manhattan")
+
+fviz_cluster(object = fuzzy_cluster, frame.type = "confidence",
+             pallete = "jco") + theme_bw() + labs(title = "Fuzzy Cluster plot")
+
+
+```
+
+
+###### 2.3.5 Gráfico **Clara Clustering**
+
+```{r Baj_Clara,echo=FALSE,cache=TRUE}
+clarax <- clara(my_data, n_clus_Ele)
+# Cluster plot
+fviz_cluster(clarax, stand = T,  frame.type = "confidence",
+             pallete = "jco") + theme_bw() + labs(title = "Clara Clustering plot")
+```
+
+
+
+# 4. Conclusiones
+Una vez realizado la clusterización con los diferentes métodos y aplicando los test respectivos para la validación y selección de los mejores método, se obtiene:
+
++ El mejor método para este grupo de datos es el jerarquico, seguido del K-Medoids, según los métodos evaluados.
+
++ Cuándo se realiza el embebimiento, los cluster mejoran en su rendimiento y clasificación, lo que permite una mejor visualización y segmentación de cada uno de items en la base de datos.
+
++ Se selecciona el método K-medoids ya que es quién gana en Silhouette y lo importante es encontrar una herramienta que pueda generalizar.
+
++ Se decidió usar software estadístico `R 3.5.2` bajo la consola `RStudio 1.1.463` para los datos, ya que se encontró y fue posible implementar cada método con las librerías que tiene; permitiendo una visualización y compilamiento adecuada en cada uno. 
+
+# 5. Referencias
+
++ <a name="1">[1]</a> Forgy, E. W. (1965). Cluster analysis of multivariate data: efficiency vs interpretability of classifications. Biometrics, 21, 768-769.
+
++ <a name="2">[2]</a> Arthur, David, and Sergi Vassilvitskii. "K-means++: The Advantages of Careful Seeding." SODA '07: Proceedings of the Eighteenth Annual ACM-SIAM Symposium on Discrete Algorithms. 2007, pp. 1027-1035.<br>
+
++ <a name="3">[3]</a> Reynolds, A., Richards, G., de la Iglesia, B. and Rayward-Smith, V. (1992) Clustering rules: A comparison of partitioning and hierarchical clustering algorithms; Journal of Mathematical Modelling and Algorithms 5, 475-504. doi: 10.1007/s10852-005-9022-1.
+
++ <a name="4">[4]</a> The particular method fanny stems from chapter 4 of Kaufman and Rousseeuw (1990) (see the references in daisy) and has been extended by Martin Maechler to allow user specified memb.exp, iniMem.p, maxit, tol, etc.
+
++ <a name="5">[5]</a> R. Yager and D. Filev, "Generation of fuzzy rules by mountain clustering," J. of Intelligent and Fuzzy Systems, vol. 2, no. 3, pp. 209 - 219 (1994).
+
++ <a name="5">[5]</a> S. Chiu, "Method and software for extracting fuzzy classification rules by subtractive clustering", Fuzzy Information Processing Society, NAFIPS, pp. 461 - 465 (1996).
+
++ <a name="6">[6]</a> Kaufman and Rousseeuw (see agnes), originally. Metric "jaccard": Kamil Kozlowski (@ownedoutcomes.com) and Kamil Jadeszko. All arguments from trace on, and most R documentation and all tests by Martin Maechler.
+
++ <a name="7">[7]</a> Murtagh, Fionn and Legendre, Pierre (2014). Ward's hierarchical agglomerative clustering method: which algorithms implement Ward's criterion? Journal of Classification, 31, 274-295. doi: 10.1007/s00357-014-9161-z.
+
++ <a name="8">[8]</a> Maaten, L. Van Der, 2014. Accelerating t-SNE using Tree-Based Algorithms. Journal of Machine Learning Research, 15, p.3221-3245.
+
