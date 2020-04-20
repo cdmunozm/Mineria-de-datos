@@ -6,8 +6,8 @@ En el presente repositorio encontraran:
 
 1. Notebook python utilizando Spark con el algoritmo para la segmentación de los clientes RFM.
 2. Informe escrito donde se describe el procedimiento que se llevo acabo en la elaboración de la segmentación
-3. Anexo 1: Pdf
-4. Anexo 2:  
+3. Anexo 1: Pdf de ayuda cllusterización que aporta al estudio inicial 
+4. Anexo 2: Script en R para sacar el anexo 1
 
 
 Realizado por Julian Castelblanco Benitez, Cristian Muñoz Mora
